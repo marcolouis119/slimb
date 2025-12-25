@@ -1,0 +1,23 @@
+version: '3.8'
+
+services:
+  slimtracker-bot:
+    build: .
+    container_name: slimtracker-bot
+    restart: unless-stopped
+    environment:
+      - TELEGRAM_TOKEN=${TELEGRAM_TOKEN}
+      - YDB_ENDPOINT=${YDB_ENDPOINT}
+      - YDB_DATABASE=${YDB_DATABASE}
+      - YDB_JSON_PATH=/app/secrets/authorized_key.json
+      - DEBUG=${DEBUG:-False}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+    volumes:
+      - ./data:/app/data
+      - ./secrets/authorized_key.json:/app/secrets/authorized_key.json:ro
+      - ./logs:/app/logs
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"

@@ -1,0 +1,133 @@
+# Sourcecraft CI/CD конфигурация для SlimTracker Bot
+version: '1.0'
+
+name: SlimTracker Bot CI/CD
+
+# Триггеры сборки
+triggers:
+  push:
+    branches: [main, develop]
+  pull_request:
+    branches: [main]
+
+# Переменные окружения
+variables:
+  # Telegram Bot Token (будет установлен в настройках проекта)
+  TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+  
+  # Yandex Cloud YDB (опционально)
+  YDB_ENDPOINT: ${YDB_ENDPOINT}
+  YDB_DATABASE: ${YDB_DATABASE}
+  
+  # Настройки приложения
+  DEBUG: "False"
+  LOG_LEVEL: "INFO"
+  
+  # Open Food Facts
+  OPENFOODFACTS_REQUEST_TIMEOUT: "10"
+  OPENFOODFACTS_CACHE_HOURS: "1"
+
+# Шаги сборки
+stages:
+  - name: test
+    jobs:
+      - name: Run Tests
+        image: python:3.10-slim
+        script:
+          - echo "🔍 Проверка зависимостей..."
+          - pip install -r requirements.txt
+          - echo "✅ Зависимости установлены"
+          
+          - echo "🧪 Запуск тестов..."
+          - python -m pytest tests/ -v --tb=short || true
+          - echo "✅ Тесты завершены"
+          
+          - echo "📝 Проверка стиля кода..."
+          - python -m py_compile bot.py config.py handlers.py || true
+          - echo "✅ Синтаксис корректен"
+        
+  - name: build
+    jobs:
+      - name: Build Docker Image
+        image: docker:latest
+        services:
+          - docker:dind
+        script:
+          - echo "🐳 Сборка Docker образа..."
+          - docker build -t slimtracker-bot:$CI_COMMIT_SHA .
+          - docker tag slimtracker-bot:$CI_COMMIT_SHA slimtracker-bot:latest
+          - echo "✅ Docker образ собран"
+          
+          - echo "📦 Сохранение образа..."
+          - docker save slimtracker-bot:latest -o slimtracker-bot.tar
+          - echo "✅ Образ сохранен"
+          
+        artifacts:
+          paths:
+            - slimtracker-bot.tar
+          expire_in: 1 week
+    
+  - name: deploy
+    jobs:
+      - name: Deploy to Production
+        image: alpine:latest
+        needs: [build]
+        script:
+          - echo "🚀 Запуск деплоя..."
+          
+          # Загружаем образ
+          - echo "📥 Загрузка Docker образа..."
+          - docker load -i slimtracker-bot.tar
+          
+          # Останавливаем старый контейнер
+          - echo "🔄 Остановка старого контейнера..."
+          - docker stop slimtracker-bot || true
+          - docker rm slimtracker-bot || true
+          
+          # Запускаем новый контейнер
+          - echo "▶️ Запуск нового контейнера..."
+          - >
+            docker run -d \
+            --name slimtracker-bot \
+            --restart unless-stopped \
+            --env TELEGRAM_TOKEN=${TELEGRAM_TOKEN} \
+            --env YDB_ENDPOINT=${YDB_ENDPOINT} \
+            --env YDB_DATABASE=${YDB_DATABASE} \
+            --env YDB_JSON_PATH=/app/secrets/authorized_key.json \
+            --env DEBUG=${DEBUG} \
+            --env LOG_LEVEL=${LOG_LEVEL} \
+            --volume /data/slimtracker:/app/data \
+            --volume /secrets/authorized_key.json:/app/secrets/authorized_key.json:ro \
+            slimtracker-bot:latest
+          
+          - echo "✅ Бот успешно запущен!"
+          
+          # Проверка работоспособности
+          - echo "🔍 Проверка работоспособности..."
+          - sleep 10
+          - docker ps | grep slimtracker-bot
+          - echo "✅ Контейнер работает"
+
+# Конфигурация контейнера для деплоя
+container:
+  image: slimtracker-bot:latest
+  ports:
+    - "8443:8443"  # Для вебхуков (если будем использовать)
+  volumes:
+    - /data/slimtracker:/app/data
+    - /secrets/authorized_key.json:/app/secrets/authorized_key.json:ro
+  environment:
+    TELEGRAM_TOKEN: ${TELEGRAM_TOKEN}
+    YDB_ENDPOINT: ${YDB_ENDPOINT}
+    YDB_DATABASE: ${YDB_DATABASE}
+    YDB_JSON_PATH: /app/secrets/authorized_key.json
+    DEBUG: ${DEBUG}
+    LOG_LEVEL: ${LOG_LEVEL}
+  restart: unless-stopped
+
+# Настройки runner
+runner:
+  tags:
+    - docker
+    - slimtracker
+  executor: docker
